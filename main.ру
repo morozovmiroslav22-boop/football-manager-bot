@@ -1,106 +1,179 @@
-from flask import Flask, request
 import os
 import telebot
-import time
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+from flask import Flask, request
 
-BOT_TOKEN = os.environ.get('BOT_TOKEN')
-bot = telebot.TeleBot(BOT_TOKEN)
+# Получаем данные из переменных окружения Render
+TOKEN = os.getenv("TELEGRAM_TOKEN")
+ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
+WEBHOOK_URL = os.getenv("RENDER_EXTERNAL_URL")  # Render автоматически добавит этот URL
+
+# Проверка
+if not TOKEN:
+    print("❌ ОШИБКА: TELEGRAM_TOKEN не установлен!")
+    exit(1)
+
+if not ADMIN_CHAT_ID:
+    print("⚠️ Внимание: ADMIN_CHAT_ID не установлен. Сообщения не будут пересылаться.")
+
+# Создаем бота и Flask приложение
+bot = telebot.TeleBot(TOKEN)
 app = Flask(__name__)
 
-# === СУПЕР-ПРОСТАЯ PvP ===
-active_matches = {}
-match_counter = 1
+# ========== КОМАНДЫ БОТА ==========
 
 @bot.message_handler(commands=['start'])
-def start_command(message):
-    bot.send_message(message.chat.id, "⚽ PvP ТЕСТ - Используй /test")
-
-@bot.message_handler(commands=['test'])
-def test_command(message):
-    global match_counter
-    
-    # Создаем матч
-    match_id = f"test_match_{match_counter}"
-    match_counter += 1
-    
-    # Сохраняем матч
-    active_matches[match_id] = {
-        'challenger_id': message.chat.id,
-        'opponent_id': message.chat.id, 
-        'status': 'pending'
-    }
-    
-    print(f"🔴 СОЗДАН МАТЧ: {match_id}")
-    print(f"🔴 Всего матчей: {len(active_matches)}")
-    print(f"🔴 ID матча в кнопке: {match_id}")
-    
-    # Показываем кнопки
-    keyboard = InlineKeyboardMarkup()
-    keyboard.add(
-        InlineKeyboardButton("✅ ПРИНЯТЬ ТЕСТ", callback_data=f"accept_{match_id}"),
+def send_welcome(message):
+    welcome_text = (
+        "👻 *Анонимный бот*\n\n"
+        "Привет! Я бот для анонимных сообщений.\n"
+        "Напиши сюда что угодно, и я перешлю это админу *без указания твоего имени*.\n\n"
+        "Можешь отправлять:\n"
+        "• Текст 📝\n• Фото 🖼️\n• Видео 🎥\n• Документы 📎\n"
+        "• Голосовые 🎤\n• Стикеры 😄\n\n"
+        "_Просто напиши или отправь файл_"
     )
-    
-    bot.send_message(message.chat.id, 
-        f"ТЕСТОВЫЙ ВЫЗОВ\nID матча: {match_id}\nНажми кнопку:",
-        reply_markup=keyboard)
+    bot.reply_to(message, welcome_text, parse_mode='Markdown')
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith('accept_'))
-def handle_accept(call):
-    match_id = call.data[7:]  # убираем "accept_"
-    
-    print(f"🟢 НАЖАТА КНОПКА: {match_id}")
-    print(f"🟢 Ищем матч: {match_id}")
-    print(f"🟢 Всего матчей: {len(active_matches)}")
-    print(f"🟢 Все матчи: {list(active_matches.keys())}")
-    
-    # Ищем матч
-    match = active_matches.get(match_id)
-    
-    if not match:
-        print(f"🔴 МАТЧ НЕ НАЙДЕН: {match_id}")
-        bot.answer_callback_query(call.id, f"Матч {match_id} не найден!")
-        return
-    
-    print(f"🟢 МАТЧ НАЙДЕН: {match}")
-    
-    # Меняем статус
-    match['status'] = 'accepted'
-    
-    # Отправляем результат
-    bot.send_message(call.message.chat.id, f"✅ МАТЧ ПРИНЯТ! ID: {match_id}")
-    bot.answer_callback_query(call.id, "Успех!")
-    
-    # Удаляем матч
-    del active_matches[match_id]
-    print(f"🟢 МАТЧ УДАЛЕН: {match_id}")
+@bot.message_handler(commands=['help'])
+def send_help(message):
+    help_text = (
+        "ℹ️ *Помощь*\n\n"
+        "Просто напишите сообщение или отправьте файл, и оно будет переслано админу анонимно.\n\n"
+        "Команды:\n"
+        "/start - Начать работу\n"
+        "/help - Эта справка\n"
+        "/privacy - Конфиденциальность\n\n"
+        "_Ваша анонимность гарантируется_"
+    )
+    bot.reply_to(message, help_text, parse_mode='Markdown')
 
-@bot.message_handler(commands=['debug'])
-def debug_command(message):
-    debug_text = f"🔧 ДЕБАГ:\nМатчей: {len(active_matches)}\n"
-    for match_id, match in active_matches.items():
-        debug_text += f"🎯 {match_id}: {match['status']}\n"
-    
-    bot.send_message(message.chat.id, debug_text)
+@bot.message_handler(commands=['privacy'])
+def send_privacy(message):
+    privacy_text = (
+        "🔒 *Конфиденциальность*\n\n"
+        "• Я НЕ сохраняю ваши личные данные\n"
+        "• Я НЕ показываю админу ваш ID, имя или username\n"
+        "• Сообщения пересылаются в чистом виде без метаданных\n"
+        "• Бот не хранит историю сообщений\n\n"
+        "_Для полной анонимности можете удалить историю переписки с ботом_"
+    )
+    bot.reply_to(message, privacy_text, parse_mode='Markdown')
 
-# === ВЕБХУК ===
+# ========== ОБРАБОТКА СООБЩЕНИЙ ==========
+
+@bot.message_handler(func=lambda message: True, content_types=['text'])
+def handle_text(message):
+    try:
+        # Отвечаем пользователю
+        bot.reply_to(message, "✅ Сообщение отправлено анонимно!", parse_mode='Markdown')
+        
+        # Пересылаем админу (если ADMIN_CHAT_ID установлен)
+        if ADMIN_CHAT_ID:
+            anonymous_msg = f"📨 *Анонимное сообщение:*\n\n`{message.text}`\n\n_ID отправителя скрыт_"
+            bot.send_message(ADMIN_CHAT_ID, anonymous_msg, parse_mode='Markdown')
+        
+        print(f"📝 Получено текстовое сообщение: {message.text[:50]}...")
+        
+    except Exception as e:
+        print(f"❌ Ошибка: {e}")
+        bot.reply_to(message, "❌ Произошла ошибка. Попробуйте позже.")
+
+@bot.message_handler(content_types=['photo'])
+def handle_photo(message):
+    try:
+        bot.reply_to(message, "✅ Фото отправлено анонимно!")
+        
+        if ADMIN_CHAT_ID:
+            # Берем самое большое фото
+            photo_id = message.photo[-1].file_id
+            caption = message.caption or "Без описания"
+            
+            bot.send_photo(
+                ADMIN_CHAT_ID, 
+                photo_id,
+                caption=f"📷 *Анонимное фото:*\n\n`{caption}`\n\n_ID скрыт_",
+                parse_mode='Markdown'
+            )
+        
+        print("🖼️ Получено фото")
+        
+    except Exception as e:
+        print(f"❌ Ошибка фото: {e}")
+
+@bot.message_handler(content_types=['video'])
+def handle_video(message):
+    try:
+        bot.reply_to(message, "✅ Видео отправлено анонимно!")
+        
+        if ADMIN_CHAT_ID:
+            video_id = message.video.file_id
+            caption = message.caption or "Без описания"
+            
+            bot.send_video(
+                ADMIN_CHAT_ID,
+                video_id,
+                caption=f"🎥 *Анонимное видео:*\n\n`{caption}`\n\n_ID скрыт_",
+                parse_mode='Markdown'
+            )
+        
+        print("🎥 Получено видео")
+        
+    except Exception as e:
+        print(f"❌ Ошибка видео: {e}")
+
+@bot.message_handler(content_types=['document', 'voice', 'audio', 'sticker'])
+def handle_other(message):
+    try:
+        file_type = {
+            'document': 'документ 📎',
+            'voice': 'голосовое сообщение 🎤',
+            'audio': 'аудио 🎵',
+            'sticker': 'стикер 😄'
+        }.get(message.content_type, 'файл')
+        
+        bot.reply_to(message, f"✅ {file_type.capitalize()} отправлено анонимно!")
+        
+        if ADMIN_CHAT_ID:
+            caption = getattr(message, 'caption', '') or getattr(message, 'file_name', '') or ''
+            
+            # Отправляем уведомление админу
+            notify_text = f"📎 *Анонимный {file_type}:*\n\n`{caption}`\n\n_ID скрыт_"
+            bot.send_message(ADMIN_CHAT_ID, notify_text, parse_mode='Markdown')
+            
+            # Если нужно переслать сам файл, можно добавить:
+            # if message.document:
+            #     bot.send_document(ADMIN_CHAT_ID, message.document.file_id)
+        
+        print(f"📎 Получен {file_type}")
+        
+    except Exception as e:
+        print(f"❌ Ошибка обработки файла: {e}")
+
+# ========== WEBHOOK ДЛЯ RENDER ==========
+
+@app.route('/')
+def index():
+    return "🤖 Анонимный бот работает! Используйте Telegram бота для отправки сообщений."
+
 @app.route('/webhook', methods=['POST'])
 def webhook():
     if request.headers.get('content-type') == 'application/json':
         json_string = request.get_data().decode('utf-8')
         update = telebot.types.Update.de_json(json_string)
         bot.process_new_updates([update])
-    return 'OK', 200
+        return ''
+    return 'Bad request', 400
 
-@app.route('/')
-def index():
-    return '⚽ PvP Debug Bot'
+# ========== ЗАПУСК ==========
 
 if __name__ == '__main__':
-    webhook_url = f"https://{os.environ.get('RENDER_SERVICE_NAME')}.onrender.com/webhook"
-    bot.remove_webhook()
-    bot.set_webhook(url=webhook_url)
-    print(f"Webhook: {webhook_url}")
+    print("=" * 50)
+    print("🤖 Запуск анонимного бота...")
+    print(f"✅ Токен: {'установлен' if TOKEN else 'НЕ установлен!'}")
+    print(f"✅ Админ ID: {ADMIN_CHAT_ID if ADMIN_CHAT_ID else 'НЕ установлен'}")
+    print("=" * 50)
     
-    from waitress import serve
-    serve(app, host="0.0.0.0", port=5000)
+    # На Render используем Flask, а не polling
+    # Это важно для правильной работы на хостинге
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, debug=False)  
