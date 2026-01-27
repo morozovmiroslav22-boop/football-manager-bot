@@ -1,106 +1,135 @@
-from flask import Flask, request
+# main.py
 import os
-import telebot
-import time
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+import asyncio
+import datetime
+import random
+from contextlib import contextmanager
 
-BOT_TOKEN = os.environ.get('BOT_TOKEN')
-bot = telebot.TeleBot(BOT_TOKEN)
-app = Flask(__name__)
+from dotenv import load_dotenv
+load_dotenv()
 
-# === СУПЕР-ПРОСТАЯ PvP ===
-active_matches = {}
-match_counter = 1
+from sqlalchemy import (
+    create_engine, Column, Integer, String, ForeignKey, DateTime, Boolean, Float
+)
+from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 
-@bot.message_handler(commands=['start'])
-def start_command(message):
-    bot.send_message(message.chat.id, "⚽ PvP ТЕСТ - Используй /test")
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-@bot.message_handler(commands=['test'])
-def test_command(message):
-    global match_counter
-    
-    # Создаем матч
-    match_id = f"test_match_{match_counter}"
-    match_counter += 1
-    
-    # Сохраняем матч
-    active_matches[match_id] = {
-        'challenger_id': message.chat.id,
-        'opponent_id': message.chat.id, 
-        'status': 'pending'
-    }
-    
-    print(f"🔴 СОЗДАН МАТЧ: {match_id}")
-    print(f"🔴 Всего матчей: {len(active_matches)}")
-    print(f"🔴 ID матча в кнопке: {match_id}")
-    
-    # Показываем кнопки
-    keyboard = InlineKeyboardMarkup()
-    keyboard.add(
-        InlineKeyboardButton("✅ ПРИНЯТЬ ТЕСТ", callback_data=f"accept_{match_id}"),
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+
+# CONFIG (read from env)
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
+WEBHOOK_BASE_URL = os.environ.get("WEBHOOK_BASE_URL", "").rstrip("/") or None
+PORT = int(os.environ.get("PORT", 5000))
+DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///./dev.db")
+
+# Basic checks / logs
+if not BOT_TOKEN:
+    print("WARNING: BOT_TOKEN not set. Bot will not register webhook without it.")
+if WEBHOOK_BASE_URL:
+    print("WEBHOOK_BASE_URL:", WEBHOOK_BASE_URL)
+print("PORT:", PORT)
+Local = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
+
+@contextmanager
+def get_session():
+    s = SessionLocal()
+    try:
+        yield s
+    finally:
+        s.close()
+
+# Models
+class User(Base):
+    __tablename__ = "users"
+    id = Column(Integer, primary_key=True)
+    telegram_id = Column(Integer, unique=True, index=True)
+    username = Column(String, nullable=True)
+    club_id = Column(Integer, ForeignKey("clubs.id"), nullable=True)
+
+class Club(Base):
+    __tablename__ = "clubs"
+    id = Column(Integer, primary_key=True)
+    name = Column(String, unique=True)
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    budget = Column(Integer, default=1000000)
+    rating = Column(Float, default=50.0)
+
+class Player(Base):
+    __tablename__ = "players"
+    id = Column(Integer, primary_key=True)
+    name = Column(String)
+    club_id = Column(Integer, ForeignKey("clubs.id"))
+    rating = Column(Integer,, cancelled
+    home_goals = Column(Integer, default=0)
+    away_goals = Column(Integer, default=0)
+    is_friendly = Column(Boolean, default=False)
+
+def create_tables():
+    Base.metadata.create_all(bind=engine)
+
+# Utility / simulator
+def compute_club_rating_from_players(players):
+    if not players:
+        return 30.0
+    return sum(p.rating for p in players) / max(1, len(players))
+
+def simulate_match_logic(home_rating, away_rating):
+    # Very simple probabilistic model:
+    diff = home_rating - away_rating
+    # expected goals (base + proportional to rating)
+    home_expected = 0.8 + (home_rating / 100.0)
+    away_expected = 0.8 + (away_rating / 100.0)
+    # bias by diff
+    home_expected += diff / 150.0
+    away_expected -= diff / 150.0
+    # add randomness via gaussian
+    home_goals = max(0, int(round(random.gauss(home_expected, 1.1))))
+    away_goals =uss(away_expected, 1.1))))
+    return home_goals, away_goals
+
+# Scheduler job: process scheduled matches whose time <= now
+async def process_scheduled_matches():
+    now = datetime.datetime.utcnow()
+    with get_session() as s:
+        matches = s.query(Match).filter(Match.status == "scheduled", Match.scheduled_time <= now).all()
+        for m in matches:
+            # load players and compute ratings
+            home_players = s.query(Player).filter(Player.club_id == m.home_club_id).all()
+            away_players = s.query(Player).filter(Player.club_id == m.away()
+    await update.message.reply_text(f"Клуб '{name}' создан! ID: {club.id}")
+
+async def my_team_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    with get_session() as s:
+        db_user = s.query(User).filter_by(telegram_id=user.id).first()
+        if not db_user or not db_user.club_id:
+            await update.message.reply_text("У тебя нет клуба. /register_team")
+            return
+        club = s.query(Club).get(db_user.club_id)
+        players = s.query(Player).filter_by(club_id= play_friendlies_cmd))
+
+    # Scheduler
+    scheduler = AsyncIOScheduler()
+    # run every 20 seconds to process ready matches (adjust interval as needed)
+    scheduler.add_job(lambda: asyncio.create_task(process_scheduled_matches()), "interval", seconds=20)
+    scheduler.start()
+
+    # register webhook and run server
+    if WEBHOOK_BASE_URL:
+        webhook_url = f"{WEBHOOK_BASE_URL}/{BOT_TOKEN}"
+    else:
+        raise SystemExit("WEBHOOK_BASE_URL env required to register webhook in Telegram")
+
+    print("Setting webhook to", webhook_url)
+    # run_webhook will run the asyncio loop, listen for Telegram updates
+    application.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        url_path=BOT_TOKEN,
+        webhook_url=webhook_url,
     )
-    
-    bot.send_message(message.chat.id, 
-        f"ТЕСТОВЫЙ ВЫЗОВ\nID матча: {match_id}\nНажми кнопку:",
-        reply_markup=keyboard)
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith('accept_'))
-def handle_accept(call):
-    match_id = call.data[7:]  # убираем "accept_"
-    
-    print(f"🟢 НАЖАТА КНОПКА: {match_id}")
-    print(f"🟢 Ищем матч: {match_id}")
-    print(f"🟢 Всего матчей: {len(active_matches)}")
-    print(f"🟢 Все матчи: {list(active_matches.keys())}")
-    
-    # Ищем матч
-    match = active_matches.get(match_id)
-    
-    if not match:
-        print(f"🔴 МАТЧ НЕ НАЙДЕН: {match_id}")
-        bot.answer_callback_query(call.id, f"Матч {match_id} не найден!")
-        return
-    
-    print(f"🟢 МАТЧ НАЙДЕН: {match}")
-    
-    # Меняем статус
-    match['status'] = 'accepted'
-    
-    # Отправляем результат
-    bot.send_message(call.message.chat.id, f"✅ МАТЧ ПРИНЯТ! ID: {match_id}")
-    bot.answer_callback_query(call.id, "Успех!")
-    
-    # Удаляем матч
-    del active_matches[match_id]
-    print(f"🟢 МАТЧ УДАЛЕН: {match_id}")
-
-@bot.message_handler(commands=['debug'])
-def debug_command(message):
-    debug_text = f"🔧 ДЕБАГ:\nМатчей: {len(active_matches)}\n"
-    for match_id, match in active_matches.items():
-        debug_text += f"🎯 {match_id}: {match['status']}\n"
-    
-    bot.send_message(message.chat.id, debug_text)
-
-# === ВЕБХУК ===
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    if request.headers.get('content-type') == 'application/json':
-        json_string = request.get_data().decode('utf-8')
-        update = telebot.types.Update.de_json(json_string)
-        bot.process_new_updates([update])
-    return 'OK', 200
-
-@app.route('/')
-def index():
-    return '⚽ PvP Debug Bot'
-
-if __name__ == '__main__':
-    webhook_url = f"https://{os.environ.get('RENDER_SERVICE_NAME')}.onrender.com/webhook"
-    bot.remove_webhook()
-    bot.set_webhook(url=webhook_url)
-    print(f"Webhook: {webhook_url}")
-    
-    from waitress import serve
-    serve(app, host="0.0.0.0", port=5000)
+if __name__ == "__main__":
+    main()
